@@ -43,7 +43,7 @@ def execute_tool(tool_name:str, tool_input:dict) -> str:
                 source_map[chunk] = r["url"]
         
         embedded_chunks = embed_chunks(all_chunks)
-        
+
         # Retrieve most relevant chunks for this specific query
         relevant = retrieve_relevant_chunks(query, embedded_chunks, top_k=3)
 
@@ -106,7 +106,6 @@ def run_research_agent(question: str) -> str:
             return final_answer
         
         if response.stop_reason == "tool_use":
-
             # Add Claude's response to message history
             messages.append({
                 "role": "assistant",
