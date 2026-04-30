@@ -6,7 +6,7 @@ from bs4 import BeautifulSoup
 import anthropic
 import voyageai   
 import numpy as np
-
+import time
 load_dotenv()
 
 tavily = TavilyClient(api_key=os.getenv("TAVILY_API_KEY"))
@@ -171,6 +171,7 @@ def retrieve_relevant_chunks(question: str,embedded_chunks: list[dict], top_k: i
     2. Compare that vector against every chunk's vector
     3. Return the top_k chunks with highest similarity scores
     """
+    time.sleep(60)
     embedded_question = embed_text(question)
     scored_chunks = []
     for chunk in embedded_chunks:

@@ -2,7 +2,7 @@ from src.agent import ask_claude
 from src.retrieval import search_web, chunk_text, embed_chunks, retrieve_relevant_chunks
 
 # Step 1: Search
-question = "Behram or Buhariwala"
+question = "Should I use Kafka or RabbitMQ for a high-throughput event pipeline?"
 print(f"Question: {question}\n")
 
 print("Step 1: Searching the web...")
