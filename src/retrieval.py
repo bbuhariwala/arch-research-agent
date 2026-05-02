@@ -183,8 +183,7 @@ def retrieve_relevant_chunks(question: str,embedded_chunks: list[dict], top_k: i
     scored_chunks.sort(key=lambda x : x["score"], reverse=True)
     return scored_chunks[:top_k]
 
-
-
+# To Test 
 if __name__ == "__main__":
     # Test chunking
     sample_text = """Kafka is a distributed event streaming platform 

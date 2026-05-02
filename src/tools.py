@@ -1,3 +1,8 @@
+# Tool definitions for Claude
+# These tell Claude what external tools it can use and when to use them.
+# Claude reads the descriptions to decide when to call each tool
+# and what arguments to pass.
+
 TOOLS =[
     {
         "name": "search_web",

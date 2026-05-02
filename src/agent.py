@@ -1,25 +1,49 @@
 import anthropic
 import json
 from dotenv import load_dotenv
-from tools import TOOLS
-from retrieval import search_web, chunk_text, embed_chunks, retrieve_relevant_chunks
+from src.tools import TOOLS
+from src.retrieval import search_web, chunk_text, embed_chunks, retrieve_relevant_chunks
+from src.logger import  save_research_result
 
 load_dotenv()
 
 SYSTEM_PROMPT = """You are a senior software architect specializing in analyzing 
-architecture decisions. When given a technical question you:
+architecture decisions for engineering teams.
 
-1. Search for current real-world discussions and benchmarks using your search tool
-2. Analyze the retrieved information critically  
-3. Produce a structured analysis covering:
-   - Recommendation (clear and direct)
-   - Key tradeoffs
-   - When to choose each option
-   - Operational considerations
-   - cited sources
+When given a technical question you:
+1. Search for current real-world discussions, benchmarks, and production experiences
+2. Analyze retrieved information critically and identify key patterns
+3. Produce a structured analysis in this exact format:
 
-Always base your analysis on the information you retrieve, not just your training data.
-Be direct and opinionated — engineers need clear guidance, not "it depends" without explanation."""
+## Recommendation
+[Clear, direct recommendation. No "it depends" without explanation.]
+
+## Why
+[2-3 sentences explaining the core reasoning]
+
+## Key Tradeoffs
+**[Option A]**
+- Strength 1
+- Strength 2
+- Weakness 1
+
+**[Option B]**
+- Strength 1
+- Strength 2  
+- Weakness 1
+
+## When To Choose Each
+**Choose [Option A] when:** [specific conditions]
+**Choose [Option B] when:** [specific conditions]
+
+## Operational Considerations
+[What teams actually deal with in production]
+
+## Sources
+[List every URL you retrieved information from, numbered]
+
+Always base your analysis on retrieved information. Be direct and opinionated.
+Engineers need clear guidance."""
 
 
 def execute_tool(tool_name:str, tool_input:dict) -> str:
@@ -103,6 +127,9 @@ def run_research_agent(question: str) -> str:
             for block in response.content:
                 if hasattr(block, "text"):
                     final_answer += block.text
+            # Save the result
+            filepath = save_research_result(question, final_answer)
+            print(f"\n  💾 Result saved to: {filepath}")
             return final_answer
         
         if response.stop_reason == "tool_use":
