@@ -130,6 +130,16 @@ def synthesize_node(state: ResearchState) -> ResearchState:
             all_context += f"{chunk['text']}\n\n"
 
     clarifications = state.get("clarifications", "")
+    critic_feedback = state.get("critic_feedback", "")
+    revision_count = state.get("revision_count", 0)
+    revision_section = ""
+    if critic_feedback and revision_count > 0:
+        revision_section = f"""
+        CRITIC FEEDBACK FROM PREVIOUS DRAFT:
+        {critic_feedback}
+        Address these gaps specifically in this revised analysis."""
+    
+    context_section = ""
     if clarifications:
         context_section = f"""Additional context from the user:
                             {clarifications}
@@ -140,10 +150,13 @@ def synthesize_node(state: ResearchState) -> ResearchState:
     prompt = f"""Based on the following research, provide a structured architecture analysis.
         Question: {state['question']}
         {context_section}
+
+        {revision_section}
+
         Research collected:
         {all_context}
-        Produce a complete structured analysis with your recommendation, tradeoffs, 
-        and numbered sources."""
+        Produce a complete structured analysis tailored to the user's specific context.
+        If this is a revision, directly address the critic's feedback."""
     response = client.messages.create(
         model="claude-opus-4-6",
         max_tokens=4096,
@@ -152,7 +165,7 @@ def synthesize_node(state: ResearchState) -> ResearchState:
     )
 
     draft = response.content[0].text
-    print(f"\n  ✓ Synthesis complete ({len(draft)} chars)")
+    print(f"\n  Synthesis complete ({len(draft)} chars)")
 
     return {
         **state,
@@ -279,7 +292,134 @@ def clarify_node(state: ResearchState) -> ResearchState:
         "clarifications": clarifications,
         "asked_clarifications": True
     }
-        
+
+def critic_node(state: ResearchState) -> ResearchState: 
+    """
+    Critic agent: a second Claude instance that reviews the Researcher's
+    draft and identifies gaps, weak reasoning, or missing considerations.
+    
+    This agent has a completely different system prompt — its job is to
+    challenge and critique, not to synthesize.
+    
+    Key insight: same model, different persona, different job.
+    """
+    client = anthropic.Anthropic()
+    CRITIC_SYSTEM_PROMPT = """You are a principal engineer and architecture reviewer 
+    with 20 years of experience. Your job is to critically evaluate architecture 
+    recommendations before they go to engineering teams.
+
+    You are skeptical, rigorous, and direct. You look for:
+    - Overly generic recommendations that ignore the user's specific context
+    - Missing tradeoffs or one-sided analysis
+    - Unsupported claims without evidence
+    - Important considerations that weren't addressed
+    - Recommendations that would fail in production
+
+    You are NOT trying to rewrite the analysis. You are identifying specific gaps
+    that require additional research or clarification.
+
+    Be direct and specific. Vague feedback like "could be more detailed" is not useful.
+    Point to exactly what is missing and why it matters."""
+
+    clarifications = state.get("clarifications", "No additional context provided")
+    revision_count = state.get("revision_count", 0)
+    
+    prompt = f"""Review this architecture recommendation:
+    ORIGINAL QUESTION: {state['question']}
+
+    USER CONTEXT:
+    {clarifications}
+
+    DRAFT RECOMMENDATION:
+    {state['current_draft']}
+
+    RESEARCH CONDUCTED:
+    {len(state['search_results'])} searches: {', '.join(state['searches_done'])}
+
+    Evaluate this recommendation critically. Consider:
+    1. Is it specific enough given the user's context?
+    2. Are all major tradeoffs covered fairly?
+    3. Are there production concerns not addressed?
+    4. Are the sources sufficient for this recommendation?
+    5. Would you be comfortable if your team shipped based on this?
+
+    Respond in this exact JSON format:
+    {{
+        "approved": true or false,
+        "overall_quality": "strong/adequate/weak",
+        "gaps": [
+            "specific gap 1",
+            "specific gap 2"
+        ],
+        "required_searches": [
+            "specific search query to fill gap 1",
+            "specific search query to fill gap 2"
+        ],
+        "feedback_summary": "2-3 sentence summary of your assessment"
+    }}
+
+    Be concise in your JSON. Keep gaps and feedback brief and specific.
+    Only approve if you would genuinely be comfortable with this recommendation
+    going to an engineering team. Be honest."""
+    response = client.messages.create(
+        model="claude-opus-4-6",
+        max_tokens=2000,
+        system=CRITIC_SYSTEM_PROMPT,
+        messages=[{"role": "user", "content": prompt}]
+    )
+    try:
+        raw = response.content[0].text.strip()
+        if "```" in raw:
+            raw = raw.split("```")[1]
+            if raw.startswith("json"):
+                raw = raw[4:]
+        decision = json.loads(raw)
+    
+    except Exception as e:
+        print(e)
+        print(f"Could not parse critic response, defaulting to approve")
+        decision = {
+            "approved": True,
+            "overall_quality": "adequate",
+            "gaps": [],
+            "required_searches": [],
+            "feedback_summary": "Parse error, defaulting to approval"
+        }
+    
+    approved = decision.get("approved", True)
+    quality = decision.get("overall_quality", "adequate")
+    gaps = decision.get("gaps", [])
+    required_searches = decision.get("required_searches", [])
+    feedback = decision.get("feedback_summary", "")
+    print(f"\n  🔍 Critic Review:")
+    print(f"  Quality: {quality}")
+    print(f"  Approved: {approved}")
+    print(f"  Feedback: {feedback}")
+    
+    if gaps:
+        print(f"  Gaps found:")
+        for gap in gaps:
+            print(f"    - {gap}")
+    
+    if required_searches:
+        print(f"  Required searches:")
+        for s in required_searches:
+            print(f"    - {s}")
+    
+    # If not approved and we have required searches,
+    # set the next search query so the search node picks it up
+    next_query = ""
+    if not approved and required_searches:
+        next_query = required_searches[0]  # Address first gap first
+    
+    return {
+        **state,
+        "critic_feedback": feedback,
+        "critic_approved": approved,
+        "revision_count": revision_count + 1,
+        "next_search_query": next_query
+    }
+
 
 def should_continue_searching(state: ResearchState) -> str :
     """
@@ -300,6 +440,25 @@ def should_continue_searching(state: ResearchState) -> str :
     else:
         return "search"
 
+
+def should_revise(state: ResearchState) -> str:
+    """
+    Conditional edge after critic node.
+    Decides whether to send back for revision or end.
+    """
+    critic_approved = state.get("critic_approved", True)
+    revision_count = state.get("revision_count", 0)
+    max_revisions = state.get("max_revisions", 2)
+    if revision_count >= max_revisions:
+        print(f"\n  → Max revisions reached ({max_revisions}), ending")
+        return "end"
+    if critic_approved:
+        print(f"\n  → Critic approved, ending")
+        return "end"
+    else:
+        print(f"\n  → Critic rejected, sending back for research")
+        return "revise"
+
 def print_run_summary(final_state: ResearchState) -> None:
     """
     Print a human-readable summary of what the agent did.
@@ -311,13 +470,16 @@ def print_run_summary(final_state: ResearchState) -> None:
     print(f"{'='*60}")
     print(f"Question: {final_state['question']}")
     print(f"Total searches: {final_state['search_count']}")
+    print(f"Revision cycles: {final_state['revision_count']}")
+    print(f"Critic approved: {final_state['critic_approved']}")
+    print(f"Critic feedback: {final_state.get('critic_feedback', 'N/A')}")
     print(f"\nSearch trail:")
     for i, query in enumerate(final_state['searches_done']):
         print(f"  {i+1}. {query}")
-    print(f"\nSources consulted: {len(final_state['search_results'])}")
-    total_chunks = sum(len(r['chunks']) for r in final_state['search_results'])
-    print(f"Total chunks retrieved: {total_chunks}")
-    print(f"Final decision: {'Synthesized' if final_state['current_draft'] else 'No output'}")
+    total_chunks = sum(
+        len(r['chunks']) for r in final_state['search_results']
+    )
+    print(f"\nTotal chunks retrieved: {total_chunks}")
     print(f"{'='*60}\n")
 
 def build_research_graph():
@@ -329,10 +491,11 @@ def build_research_graph():
                          └────────────────────────────────┘
     """
     graph = StateGraph(ResearchState)
-    graph.add_node("clarify", clarify_node)      # NEW
+    graph.add_node("clarify", clarify_node)
     graph.add_node("search", search_node)
     graph.add_node("synthesize", synthesize_node)
     graph.add_node("reason", reasoning_node)
+    graph.add_node("critic", critic_node)
 
     # Add edges
     # Always start with a search
@@ -346,6 +509,16 @@ def build_research_graph():
         {
             "search" : "search",
             "synthesize" : "synthesize"
+        }
+    )
+
+    graph.add_edge("synthesize", "critic")
+    graph.add_conditional_edges(
+        "critic",
+        should_revise,  
+        {
+            "end" : END,
+            "revise" : "search"
         }
     )
 
@@ -375,7 +548,11 @@ def run_research_agent(question: str) -> str:
         "has_enough_info": False,
         "next_search_query": "",
         "clarifications": "",
-        "asked_clarifications": False
+        "asked_clarifications": False,
+        "critic_feedback": "",
+        "critic_approved": False,
+        "revision_count": 0,
+        "max_revisions": 2
     }
 
     # Run the graph
@@ -400,3 +577,7 @@ class ResearchState(TypedDict):
     next_search_query: str           # what to search for next if needed
     clarifications: str              # user's answers to clarifying questions
     asked_clarifications: bool       # Have we asked yet?
+    critic_feedback: str             # What the critic found
+    critic_approved: bool            # Did the critic approve?
+    revision_count: int              # How many revision cycles
+    max_revisions: int               # Hard limit on revisions
