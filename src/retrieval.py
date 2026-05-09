@@ -178,7 +178,7 @@ def retrieve_relevant_chunks(question: str,embedded_chunks: list[dict], top_k: i
     """
     if not embedded_chunks:
         return []
-        
+
     time.sleep(60)
     embedded_question = embed_text(question)
     scored_chunks = []

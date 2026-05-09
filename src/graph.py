@@ -64,7 +64,9 @@ def search_node(state: ResearchState):
                     Respond with ONLY the search query, nothing else."""
         else:
             context = f"""You are researching: {state['question']}
-                    What is the most important thing to search for first?
+                    User context:
+                    {state.get('clarifications', 'No additional context')}
+                    What is the most important thing to search for first given this context?
                     Respond with ONLY the search query, nothing else."""
     
             # Ask Claude what to search for
@@ -126,9 +128,18 @@ def synthesize_node(state: ResearchState) -> ResearchState:
         for chunk in result["chunks"]:
             all_context += f"Excerpt (relevance: {chunk['score']:.2f}):\n"
             all_context += f"{chunk['text']}\n\n"
-        
+
+    clarifications = state.get("clarifications", "")
+    if clarifications:
+        context_section = f"""Additional context from the user:
+                            {clarifications}
+                            Use this context to make your recommendation specific to their situation."""
+    else:
+        context_section = "No additional context provided."
+
     prompt = f"""Based on the following research, provide a structured architecture analysis.
         Question: {state['question']}
+        {context_section}
         Research collected:
         {all_context}
         Produce a complete structured analysis with your recommendation, tradeoffs, 
@@ -224,6 +235,52 @@ def reasoning_node(state: ResearchState) -> ResearchState:
         
     }
 
+def clarify_node(state: ResearchState) -> ResearchState:
+    """
+    Clarification node: before researching, ask the user targeted
+    questions to make the analysis more specific and useful.
+    """
+    client = anthropic.Anthropic()
+    prompt = f"""You are a senior software architect about to research this question:
+    "{state['question']}"
+
+    Before researching, identify 3-4 specific clarifying questions that would 
+    significantly change your recommendation. Focus on:
+    - Scale and volume requirements
+    - Team experience and operational capacity  
+    - Existing infrastructure and constraints
+    - Specific technical requirements
+
+    Format as a numbered list. Be concise — one line per question."""
+    response = client.messages.create(
+        model="claude-opus-4-6",
+        max_tokens=300,
+        messages=[{"role": "user", "content": prompt}]
+    )
+
+    questions = response.content[0].text.strip()
+    # Print questions and get user input
+    print(f"\n{'='*60}")
+    print("Before I research this, a few quick questions:")
+    print(f"{'='*60}")
+    print(questions)
+    print(f"\n{'='*60}")
+    print("Your answers (press Enter after each, type 'done' when finished):")
+    answers = []
+    while True:
+        answer = input("> ").strip()
+        if answer.lower() == "done" or not answer:
+            break
+        answers.append(answer)
+    clarifications = "\n".join(answers)
+
+    return {
+        **state,
+        "clarifications": clarifications,
+        "asked_clarifications": True
+    }
+        
+
 def should_continue_searching(state: ResearchState) -> str :
     """
     Decides whether to search again or synthesize.
@@ -243,22 +300,44 @@ def should_continue_searching(state: ResearchState) -> str :
     else:
         return "search"
 
+def print_run_summary(final_state: ResearchState) -> None:
+    """
+    Print a human-readable summary of what the agent did.
+    This is your visibility into the agent's decision making.
+    In production this would be logged to an observability system.
+    """
+    print(f"\n{'='*60}")
+    print("AGENT RUN SUMMARY")
+    print(f"{'='*60}")
+    print(f"Question: {final_state['question']}")
+    print(f"Total searches: {final_state['search_count']}")
+    print(f"\nSearch trail:")
+    for i, query in enumerate(final_state['searches_done']):
+        print(f"  {i+1}. {query}")
+    print(f"\nSources consulted: {len(final_state['search_results'])}")
+    total_chunks = sum(len(r['chunks']) for r in final_state['search_results'])
+    print(f"Total chunks retrieved: {total_chunks}")
+    print(f"Final decision: {'Synthesized' if final_state['current_draft'] else 'No output'}")
+    print(f"{'='*60}\n")
+
 def build_research_graph():
     """
     Graph structure:
     
-    START → search → reason → enough? → YES → synthesize → END
+    START → clarify → search → reason → enough? → YES → synthesize → END
                          ↑                → NO  → search ──┘
                          └────────────────────────────────┘
     """
     graph = StateGraph(ResearchState)
+    graph.add_node("clarify", clarify_node)      # NEW
     graph.add_node("search", search_node)
     graph.add_node("synthesize", synthesize_node)
     graph.add_node("reason", reasoning_node)
 
     # Add edges
     # Always start with a search
-    graph.set_entry_point("search")
+    graph.set_entry_point("clarify")
+    graph.add_edge("clarify", "search")
     graph.add_edge("search", "reason")
 
     graph.add_conditional_edges(
@@ -292,11 +371,18 @@ def run_research_agent(question: str) -> str:
         "searches_done": [],
         "current_draft": "",
         "search_count": 0,
-        "max_searches": 5      # Claude will search 3 times before synthesizing
+        "max_searches": 5,
+        "has_enough_info": False,
+        "next_search_query": "",
+        "clarifications": "",
+        "asked_clarifications": False
     }
 
     # Run the graph
     final_state = app.invoke(initial_state)
+
+    # Print what the agent did
+    print_run_summary(final_state)
 
     return final_state["current_draft"]
 
@@ -310,5 +396,7 @@ class ResearchState(TypedDict):
     current_draft: str               # The current synthesis/answer
     search_count: int                # How many searches have been done
     max_searches: int                # Maximum searches allowed (prevents infinite loops)
-    has_enough_info: bool          # NEW: reasoning node's decision
-    next_search_query: str         # NEW: what to search for next if needed
+    has_enough_info: bool            #  Reasoning node's decision
+    next_search_query: str           # what to search for next if needed
+    clarifications: str              # user's answers to clarifying questions
+    asked_clarifications: bool       # Have we asked yet?
