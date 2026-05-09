@@ -5,6 +5,7 @@ from src.retrieval import search_web, chunk_text, embed_chunks, retrieve_relevan
 from src.tools import TOOLS
 import anthropic
 from dotenv import load_dotenv
+import json
 
 load_dotenv()
 
@@ -40,38 +41,47 @@ When synthesizing, produce analysis in this format:
 
 def search_node(state: ResearchState):
     """
-    Search node: asks Claude what to search for next,
-    executes the search, and adds results to state.
-    
-    This node is responsible for one thing only: gathering information.
+    Search node: executes a search and adds results to state.
+    Uses next_search_query from reasoning node if available,
+    otherwise asks Claude what to search for.
     """
     client = anthropic.Anthropic()
 
-    searches_done = state.get("searches_done", [])
     search_count = state.get("search_count", 0)
 
-    if searches_done:
-        context = f"""You are researching: {state['question']}
-                You have already searched for:
-                {chr(10).join(f'- {s}' for s in searches_done)}
-                What should you search for next to get a more complete picture?
-                Respond with ONLY the search query, nothing else."""
+    # check if reasoning node was executed
+    next_query = state.get("next_search_query","")
+    if next_query:
+        query = next_query
+        print(f"\n Search {search_count + 1} (targeted): '{query}'")
     else:
-        context = f"""You are researching: {state['question']}
-                What is the most important thing to search for first?
-                Respond with ONLY the search query, nothing else."""
+        searches_done = state.get("searches_done", [])
+        if searches_done:
+            context = f"""You are researching: {state['question']}
+                    You have already searched for:
+                    {chr(10).join(f'- {s}' for s in searches_done)}
+                    What should you search for next to get a more complete picture?
+                    Respond with ONLY the search query, nothing else."""
+        else:
+            context = f"""You are researching: {state['question']}
+                    What is the most important thing to search for first?
+                    Respond with ONLY the search query, nothing else."""
     
-    # Ask Claude what to search for
-    response = client.messages.create(
-        model="claude-opus-4-6",
-        max_tokens=100,
-        messages=[{"role": "user", "content": context}]
-    )
+            # Ask Claude what to search for
+            response = client.messages.create(
+                model="claude-opus-4-6",
+                max_tokens=100,
+                messages=[{"role": "user", "content": context}]
+            )
 
-    query = response.content[0].text.strip()
-    print(f"\n  🔍 Search {search_count + 1}: '{query}'")
+            query = response.content[0].text.strip()
+            print(f"  DEBUG: Raw query from Claude: '{query}' | Length: {len(query)}")
+            print(f"\n  🔍 Search {search_count + 1}: '{query}'")
+    
     # Execute the search
     results, summary = search_web(query)
+    #print("***Results***", results)
+    #print(f"\n Summary: ", summary)
     # Chunk and embed
     all_chunks = []
     for r in results:
@@ -95,7 +105,8 @@ def search_node(state: ResearchState):
         **state,
         "search_results": current_results + [formatted_results],
         "searches_done": current_searches + [query],
-        "search_count": search_count + 1
+        "search_count": search_count + 1,
+        "next_search_query": ""  # Clear it after use
     }
     
 def synthesize_node(state: ResearchState) -> ResearchState:
@@ -133,7 +144,83 @@ def synthesize_node(state: ResearchState) -> ResearchState:
         **state,
         "current_draft": draft
     }
+
+
+def reasoning_node(state: ResearchState) -> ResearchState:
+    """
+    Reasoning node: Claude reads all search results collected so far
+    and decides whether it has enough information to synthesize,
+    or whether it needs to search for something specific.
     
+    This is what makes the agent intelligent instead of mechanical.
+    It sets a flag in state that the conditional edge reads.
+    """
+
+    client = anthropic.Anthropic()
+    searches_summary = ""
+    for i,result in enumerate(state["search_results"]):
+        searches_summary += f"\nSearch {i+1}: '{result['query']}'\n"
+        searches_summary += f"Summary: {result['summary']}\n"
+        if result['chunks']:
+            searches_summary += f"Sample content: {result['chunks'][0]['text'][:200]}...\n"
+    
+    prompt = f"""You are researching this architecture question:
+        "{state['question']}"
+        Here is what you have found so far:
+        {searches_summary}
+
+        Searches completed: {state['search_count']}
+        Maximum searches allowed: {state['max_searches']}
+
+        Evaluate the research collected and decide:
+        1. Do you have enough information to write a thorough architecture analysis?
+        2. Are there important gaps or angles not yet covered?
+
+        Respond in this exact JSON format:
+        {{
+            "has_enough_info": true or false,
+            "reasoning": "brief explanation of your decision",
+            "next_search_query": "specific query if you need more info, empty string if not"
+        }}
+
+        Be honest — if you have good coverage of tradeoffs, performance, and operational 
+        concerns, say you have enough. Only search again if there is a specific important gap."""
+
+    response = client.messages.create(
+        model="claude-opus-4-6",
+        max_tokens=300,
+        messages=[{"role":"user","content": prompt}]
+    )
+
+    try:
+        raw = response.content[0].text.strip()
+        if "```" in raw:
+            raw = raw.split("```")[1]
+            if raw.startswith("json"):
+                raw = raw[4:]
+        decision = json.loads(raw)
+    
+    except Exception as e:
+        print(e)
+        print("Could not parse this json, defaulting to synthesize")
+        decision = {
+            "has_enough_data" : True,
+            "reasoning": "Parse error, defaulting to synthesis",
+            "next_search_query": ""
+        }
+    print(f"\n Reasoning: {decision['reasoning']}")
+    print(f"\n Has enough info: {decision['has_enough_info']}")
+    if not decision["has_enough_info"] and decision.get("next_search_query"):
+        print(f"  → Will search for: '{decision['next_search_query']}'")
+    
+        # Store the decision in state
+    return {
+        **state,
+        "has_enough_info": decision["has_enough_info"],
+        "next_search_query": decision['next_search_query']
+        
+    }
+
 def should_continue_searching(state: ResearchState) -> str :
     """
     Decides whether to search again or synthesize.
@@ -142,34 +229,37 @@ def should_continue_searching(state: ResearchState) -> str :
     """
 
     search_count = state.get("search_count", 0)
-    max_searches = state.get("max_searches", 3)
+    max_searches = state.get("max_searches", 5)
+    has_enough_info = state.get("has_enough_info", False)
     
     if search_count >= max_searches:
         print(f"\n  → Reached max searches ({max_searches}), moving to synthesis")
         return "synthesize"
+    if has_enough_info:
+        return "synthesize"
     else:
-        print(f"\v → Searches done: {search_count} / {max_searches}, searching again")
         return "search"
 
 def build_research_graph():
     """
-    Build and compile the research agent graph.
-
     Graph structure:
-
-    START → search → [should_continue_searching] → search (loop)
-                                                    → synthesize → END
+    
+    START → search → reason → enough? → YES → synthesize → END
+                         ↑                → NO  → search ──┘
+                         └────────────────────────────────┘
     """
     graph = StateGraph(ResearchState)
     graph.add_node("search", search_node)
     graph.add_node("synthesize", synthesize_node)
+    graph.add_node("reason", reasoning_node)
 
     # Add edges
     # Always start with a search
     graph.set_entry_point("search")
+    graph.add_edge("search", "reason")
 
     graph.add_conditional_edges(
-        "search",
+        "reason",
         should_continue_searching,  
         {
             "search" : "search",
@@ -199,7 +289,7 @@ def run_research_agent(question: str) -> str:
         "searches_done": [],
         "current_draft": "",
         "search_count": 0,
-        "max_searches": 3      # Claude will search 3 times before synthesizing
+        "max_searches": 5      # Claude will search 3 times before synthesizing
     }
 
     # Run the graph
@@ -217,3 +307,5 @@ class ResearchState(TypedDict):
     current_draft: str               # The current synthesis/answer
     search_count: int                # How many searches have been done
     max_searches: int                # Maximum searches allowed (prevents infinite loops)
+    has_enough_info: bool          # NEW: reasoning node's decision
+    next_search_query: str         # NEW: what to search for next if needed

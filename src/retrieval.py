@@ -132,6 +132,10 @@ def embed_chunks(chunks: list[str]) -> list[dict]:
     """
     voyage = voyageai.Client(api_key=os.getenv("VOYAGE_API_KEY"))
     
+    print(f"  DEBUG: Chunks being sent to Voyage: {len(chunks)} chunks")
+    for i, chunk in enumerate(chunks):
+        print(f"  DEBUG: Chunk {i}: length={len(chunk)}, empty={not chunk.strip()}")
+
     response = voyage.embed(
         texts=chunks,
         model="voyage-3"

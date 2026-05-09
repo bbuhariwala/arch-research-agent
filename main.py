@@ -3,7 +3,7 @@ from src.graph import run_research_agent
 from src.logger import save_research_result
 
 question = "Should I use Kafka or RabbitMQ for a high-throughput event pipeline?"
-
+#question = "Kafka vs RabbitMQ architecture tradeoffs operational complexity message guarantees ordering replay consumer scaling"
 answer = run_research_agent(question)
 
 filepath = save_research_result(question, answer)
