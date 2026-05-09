@@ -77,6 +77,9 @@ def search_node(state: ResearchState):
             query = response.content[0].text.strip()
             print(f"  DEBUG: Raw query from Claude: '{query}' | Length: {len(query)}")
             print(f"\n  🔍 Search {search_count + 1}: '{query}'")
+            if not query:
+                print(f"  ⚠️ Claude returned empty query, falling back to original question")
+                query = state["question"]
     
     # Execute the search
     results, summary = search_web(query)

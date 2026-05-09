@@ -130,11 +130,12 @@ def embed_chunks(chunks: list[str]) -> list[dict]:
     Embed all chunks in a single API call using Voyage's batch support.
     Much more efficient than one call per chunk.
     """
+
+    valid_chunks = [c for c in chunks if c and c.strip()]
+    if not valid_chunks:
+        return []
+
     voyage = voyageai.Client(api_key=os.getenv("VOYAGE_API_KEY"))
-    
-    print(f"  DEBUG: Chunks being sent to Voyage: {len(chunks)} chunks")
-    for i, chunk in enumerate(chunks):
-        print(f"  DEBUG: Chunk {i}: length={len(chunk)}, empty={not chunk.strip()}")
 
     response = voyage.embed(
         texts=chunks,
@@ -175,6 +176,9 @@ def retrieve_relevant_chunks(question: str,embedded_chunks: list[dict], top_k: i
     2. Compare that vector against every chunk's vector
     3. Return the top_k chunks with highest similarity scores
     """
+    if not embedded_chunks:
+        return []
+        
     time.sleep(60)
     embedded_question = embed_text(question)
     scored_chunks = []
