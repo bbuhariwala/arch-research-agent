@@ -36,7 +36,20 @@ When synthesizing, produce analysis in this format:
 [What teams deal with in production]
 
 ## Sources
-[Numbered list of all URLs referenced]"""
+[Numbered list of all URLs referenced]
+
+CRITICAL: Only cite specific performance numbers, benchmarks, or statistics 
+if they appear explicitly in the retrieved content provided to you. 
+If you are uncertain of a specific number, use approximate language 
+or omit it entirely. Never invent citations or benchmark sources.
+
+CITATION RULES:
+- Every specific claim, number, or benchmark must have an inline citation
+- Format inline citations as [source: domain.com] immediately after the claim
+- Example: "Kafka handles 1M msgs/sec [source: confluent.io]"
+- Only cite URLs that appear in the retrieved content provided to you
+- Never cite a source for a claim if that source was not in your retrieved content
+- List all cited sources again in a ## Sources section at the end"""
 
 
 def search_node(state: ResearchState):
@@ -91,16 +104,32 @@ def search_node(state: ResearchState):
     all_chunks = []
     for r in results:
         chunks = chunk_text(r["content"])
-        all_chunks.extend(chunks)
+        for chunk in chunks:
+            all_chunks.append({
+                "text": chunk,
+                "url": r["url"],        # carry the URL
+                "title": r["title"]     # carry the title too
+            })
     
-    embedded = embed_chunks(all_chunks)
+    embedded = embed_chunks([chunk["text"] for chunk in all_chunks])
+    for i, emb in enumerate(embedded):
+        emb["url"] = all_chunks[i]["url"]
+        emb["title"] = all_chunks[i]["title"]
+
     relevant = retrieve_relevant_chunks(query, embedded, top_k=3)
 
     # Format results
     formatted_results = {
         "query": query,
         "summary": summary,
-        "chunks": [{"text": c["text"], "score": c["score"]} for c in relevant]
+        "chunks": [
+            {
+                "text": c["text"], 
+                "score": c["score"],
+                "url": c["url"],
+                "title": c["title"]
+            } for c in relevant
+        ]
     }
 
     current_results = state.get("search_results", [])
@@ -126,6 +155,7 @@ def synthesize_node(state: ResearchState) -> ResearchState:
         all_context += f"\n--- Search {i+1}: '{result['query']}' ---\n"
         all_context += f"Summary: {result['summary']}\n\n"
         for chunk in result["chunks"]:
+            all_context += f"Source: {chunk.get('url', 'unknown')}\n"
             all_context += f"Excerpt (relevance: {chunk['score']:.2f}):\n"
             all_context += f"{chunk['text']}\n\n"
 
@@ -165,6 +195,13 @@ def synthesize_node(state: ResearchState) -> ResearchState:
     )
 
     draft = response.content[0].text
+    if critic_feedback and revision_count >= max_revisions:
+        draft += f"""
+        ---
+        ## Reviewer Notes
+        *The following items should be verified before committing to this architecture:*
+        {critic_feedback}"""
+
     print(f"\n  Synthesis complete ({len(draft)} chars)")
 
     return {
@@ -363,6 +400,7 @@ def critic_node(state: ResearchState) -> ResearchState:
     going to an engineering team. Be honest."""
     response = client.messages.create(
         model="claude-opus-4-6",
+        temperature=0.3,
         max_tokens=2000,
         system=CRITIC_SYSTEM_PROMPT,
         messages=[{"role": "user", "content": prompt}]

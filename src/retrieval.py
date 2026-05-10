@@ -186,6 +186,8 @@ def retrieve_relevant_chunks(question: str,embedded_chunks: list[dict], top_k: i
         score = cosine_similarity(embedded_question, chunk["embedding"])
         scored_chunks.append({
             "text": chunk["text"],
+            "url": chunk.get("url", "unknown"),
+            "title": chunk.get("title", "unknown"),
             "score": score
         })
     scored_chunks.sort(key=lambda x : x["score"], reverse=True)
