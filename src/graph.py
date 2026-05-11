@@ -6,6 +6,7 @@ from src.tools import TOOLS
 import anthropic
 from dotenv import load_dotenv
 from src.mcp_client import search_via_mcp
+from src.mcp_client import run_mcp_research
 import json
 
 load_dotenv()
@@ -53,61 +54,69 @@ CITATION RULES:
 - List all cited sources again in a ## Sources section at the end"""
 
 
-def search_node(state: ResearchState):
+def search_node(state: ResearchState) -> ResearchState:
     """
-    Search node: executes a search and adds results to state.
-    Uses next_search_query from reasoning node if available,
-    otherwise asks Claude what to search for.
+    Search node: builds full context from state and runs MCP research.
+    Claude discovers tools and decides what to search for.
     """
-    client = anthropic.Anthropic()
-
+    from src.mcp_client import run_mcp_research
+    
     search_count = state.get("search_count", 0)
-
-    # check if reasoning node was executed
-    next_query = state.get("next_search_query","")
-    if next_query:
-        query = next_query
-        print(f"\n Search {search_count + 1} (targeted): '{query}'")
-    else:
-        searches_done = state.get("searches_done", [])
-        if searches_done:
-            context = f"""You are researching: {state['question']}
-                    You have already searched for:
-                    {chr(10).join(f'- {s}' for s in searches_done)}
-                    What should you search for next to get a more complete picture?
-                    Respond with ONLY the search query, nothing else."""
-        else:
-            context = f"""You are researching: {state['question']}
-                    User context:
-                    {state.get('clarifications', 'No additional context')}
-                    What is the most important thing to search for first given this context?
-                    Respond with ONLY the search query, nothing else."""
+    clarifications = state.get("clarifications", "")
+    searches_done = state.get("searches_done", [])
+    critic_feedback = state.get("critic_feedback", "")
     
-            # Ask Claude what to search for
-            response = client.messages.create(
-                model="claude-opus-4-6",
-                max_tokens=100,
-                messages=[{"role": "user", "content": context}]
-            )
-
-            query = response.content[0].text.strip()
-            print(f"  DEBUG: Raw query from Claude: '{query}' | Length: {len(query)}")
-            print(f"\n  🔍 Search {search_count + 1}: '{query}'")
-            if not query:
-                print(f"  ⚠️ Claude returned empty query, falling back to original question")
-                query = state["question"]
+    # Build rich context from full state
+    # This is everything Claude needs to make informed search decisions
+    context_parts = []
     
-    # Execute the search
-    mcp_result = search_via_mcp(query)
-    #print("***Results***", results)
-    #print(f"\n Summary: ", summary)
-    # MCP returns pre-formatted text with chunks already retrieved
+    context_parts.append(f"Architecture question: {state['question']}")
+    
+    if clarifications:
+        context_parts.append(f"User context:\n{clarifications}")
+    
+    if searches_done:
+        context_parts.append(
+            "Already searched for:\n" +
+            "\n".join(f"- {s}" for s in searches_done) +
+            "\n\nDo NOT repeat these searches."
+        )
+    
+    if critic_feedback:
+        context_parts.append(
+            f"Critic feedback on previous draft:\n{critic_feedback}\n"
+            f"Focus your searches specifically on addressing these gaps."
+        )
+    
+    context_parts.append(
+        "Use the available tools to search for what is still missing. "
+        "Make 1-2 targeted searches. Be specific in your queries."
+    )
+    
+    context = "\n\n".join(context_parts)
+    
+    print(f"\n  🔍 Search round {search_count + 1}...")
+    
+    # Run MCP research — Claude discovers tools and picks what to call
+    mcp_result = run_mcp_research(context)
+    
     formatted_results = {
-        "query": query,
+        "query": f"MCP round {search_count + 1}",
         "summary": "",
         "raw_mcp_result": mcp_result,
-        "chunks": []  # chunks are embedded in mcp_result text
-}
+        "chunks": []
+    }
+    
+    current_results = state.get("search_results", [])
+    current_searches = state.get("searches_done", [])
+    
+    return {
+        **state,
+        "search_results": current_results + [formatted_results],
+        "searches_done": current_searches + [f"MCP round {search_count + 1}"],
+        "search_count": search_count + 1,
+        "next_search_query": ""
+    }
 
     current_results = state.get("search_results", [])
     current_searches = state.get("searches_done", [])
@@ -425,18 +434,12 @@ def critic_node(state: ResearchState) -> ResearchState:
         for s in required_searches:
             print(f"    - {s}")
     
-    # If not approved and we have required searches,
-    # set the next search query so the search node picks it up
-    next_query = ""
-    if not approved and required_searches:
-        next_query = required_searches[0]  # Address first gap first
-    
     return {
         **state,
         "critic_feedback": feedback,
         "critic_approved": approved,
         "revision_count": revision_count + 1,
-        "next_search_query": next_query
+        "next_search_query": ""    # cleared — MCP client handles this now
     }
 
 
