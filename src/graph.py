@@ -5,6 +5,7 @@ from src.retrieval import search_web, chunk_text, embed_chunks, retrieve_relevan
 from src.tools import TOOLS
 import anthropic
 from dotenv import load_dotenv
+from src.mcp_client import search_via_mcp
 import json
 
 load_dotenv()
@@ -97,40 +98,16 @@ def search_node(state: ResearchState):
                 query = state["question"]
     
     # Execute the search
-    results, summary = search_web(query)
+    mcp_result = search_via_mcp(query)
     #print("***Results***", results)
     #print(f"\n Summary: ", summary)
-    # Chunk and embed
-    all_chunks = []
-    for r in results:
-        chunks = chunk_text(r["content"])
-        for chunk in chunks:
-            all_chunks.append({
-                "text": chunk,
-                "url": r["url"],        # carry the URL
-                "title": r["title"]     # carry the title too
-            })
-    
-    embedded = embed_chunks([chunk["text"] for chunk in all_chunks])
-    for i, emb in enumerate(embedded):
-        emb["url"] = all_chunks[i]["url"]
-        emb["title"] = all_chunks[i]["title"]
-
-    relevant = retrieve_relevant_chunks(query, embedded, top_k=3)
-
-    # Format results
+    # MCP returns pre-formatted text with chunks already retrieved
     formatted_results = {
         "query": query,
-        "summary": summary,
-        "chunks": [
-            {
-                "text": c["text"], 
-                "score": c["score"],
-                "url": c["url"],
-                "title": c["title"]
-            } for c in relevant
-        ]
-    }
+        "summary": "",
+        "raw_mcp_result": mcp_result,
+        "chunks": []  # chunks are embedded in mcp_result text
+}
 
     current_results = state.get("search_results", [])
     current_searches = state.get("searches_done", [])
@@ -153,11 +130,15 @@ def synthesize_node(state: ResearchState) -> ResearchState:
     all_context = ""
     for i , result in enumerate(state["search_results"]):
         all_context += f"\n--- Search {i+1}: '{result['query']}' ---\n"
-        all_context += f"Summary: {result['summary']}\n\n"
-        for chunk in result["chunks"]:
-            all_context += f"Source: {chunk.get('url', 'unknown')}\n"
-            all_context += f"Excerpt (relevance: {chunk['score']:.2f}):\n"
-            all_context += f"{chunk['text']}\n\n"
+        # Handle both old format and new MCP format
+        if "raw_mcp_result" in result:
+            all_context += result["raw_mcp_result"]
+        else:
+            all_context += f"Summary: {result['summary']}\n\n"
+            for chunk in result["chunks"]:
+                all_context += f"Source: {chunk.get('url', 'unknown')}\n"
+                all_context += f"Excerpt (relevance: {chunk['score']:.2f}):\n"
+                all_context += f"{chunk['text']}\n\n"
 
     clarifications = state.get("clarifications", "")
     critic_feedback = state.get("critic_feedback", "")
