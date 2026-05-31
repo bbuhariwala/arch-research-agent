@@ -16,7 +16,7 @@ Given an architecture question like "Should I use Kafka or RabbitMQ?":
 
 ## Architecture
 
-![Architecture Diagram](docs/architecture.png)
+![Architecture Diagram](docs/ArchitectureDiagram.png)
 
 ## Tech Stack
 
