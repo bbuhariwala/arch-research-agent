@@ -100,17 +100,11 @@ def search_node(state: ResearchState) -> ResearchState:
     # Run MCP research — Claude discovers tools and picks what to call
     mcp_result = run_mcp_research(context)
 
-    print(f"\n  DEBUG: MCP result length: {len(mcp_result)}")
-    print(f"  DEBUG: MCP result preview: {mcp_result[:300] if mcp_result else 'EMPTY'}")
-    
     formatted_results = {
         "query": f"MCP round {search_count + 1}",
         "summary": extract_summary(mcp_result),
         "full_content": mcp_result
     }
-
-    print(f"  DEBUG: full_content length: {len(formatted_results['full_content'])}")
-    print(f"  DEBUG: summary: '{formatted_results['summary']}'")
     
     current_results = state.get("search_results", [])
     current_searches = state.get("searches_done", [])
