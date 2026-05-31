@@ -1,73 +1,83 @@
 # Architecture Research Agent
 
-A multi-agent system that researches software architecture decisions using 
-real-world sources from GitHub, Hacker News, and technical blogs.
+A multi-agent system that researches software architecture decisions 
+using real-world sources from GitHub, Hacker News, and technical blogs.
 
 ## What It Does
 
-Given an architecture question like "Should I use Kafka or RabbitMQ?", 
-the agent:
-1. Autonomously searches relevant technical sources
-2. Retrieves the most semantically relevant content using RAG
-3. Dynamically replans — searching again if it identifies gaps
-4. Synthesizes a structured analysis with citations
+Given an architecture question like "Should I use Kafka or RabbitMQ?":
+1. Asks 3-4 clarifying questions to understand your specific context
+2. Autonomously searches relevant technical sources via MCP
+3. Uses RAG to retrieve the most semantically relevant content
+4. Reasons about whether it has enough information to synthesize
+5. Produces a structured analysis with inline citations
+6. Has a critic agent review the draft for errors before delivery
+7. Iterates based on critic feedback until approved
 
 ## Architecture
 
-Question → Claude (orchestrator)
-↓ decides to search
-search_web() → Tavily API (HN, GitHub, blogs)
-↓
-chunk_text() → overlapping 150-word chunks
-↓
-embed_chunks() → Voyage AI embeddings
-↓
-retrieve_relevant_chunks() → cosine similarity
-↓
-Claude (synthesizer) → structured analysis + citations
+![Architecture Diagram](docs/architecture.png)
 
 ## Tech Stack
 
-- **Claude API** — orchestration and synthesis
+- **Claude API** — orchestration, synthesis, and critique
+- **LangGraph** — agent graph with typed state management
 - **Tavily** — web search across HN, GitHub, technical blogs
 - **Voyage AI** — text embeddings (voyage-3 model)
+- **MCP** — standard protocol for tool integration
 - **RAG pipeline** — chunking, embedding, cosine similarity retrieval
-- **Dynamic replanning** — agent searches multiple times based on what it finds
+
+## Key Design Decisions
+
+**Why LangGraph over a while loop**
+Adding the critic agent was one new node and two edges — 
+no existing code changed. A while loop would have required 
+modifying existing logic. LangGraph makes the system extensible.
+
+**Why multi-agent**
+A single agent optimized to produce answers isn't optimized 
+to critique them. The critic caught a cost estimate off by 
+50-100x and a recommendation physically impossible at the 
+user's stated scale. Same model, different mandate.
+
+**Why MCP**
+Search is exposed as an MCP server — any MCP-compatible 
+client can use it without knowing the implementation. 
+Claude discovers tools at runtime and decides which to call.
+
+**Why snippet-based RAG**
+5 results × ~500 words = 2,500 words chunked into ~15 pieces. 
+Top 3 retrieved = ~450 focused words to Claude. Better signal, 
+lower cost, faster responses than passing everything.
+
+**Why clarification loop**
+Without context the system recommended self-managed Kafka 
+to a 2-person team. With context it recommended MSK Serverless 
+and flagged operational risk. 4 questions materially changed 
+the recommendation.
+
+**Critic temperature at 0.3**
+Approval decisions need consistency not creativity. 
+Lower temperature produces more reliable judgment calls.
 
 ## Setup
 
 1. Clone the repo
-2. Create a virtual environment: `python -m venv venv && source venv/bin/activate`
-3. Install dependencies: `pip install -r requirements.txt`
-4. Copy `.env.example` to `.env` and add your API keys
-5. Run: `python main.py`
+2. `python -m venv venv && source venv/bin/activate`
+3. `pip install -r requirements.txt`
+4. Copy `.env.example` to `.env` and add API keys
+5. `python main.py`
 
 ## API Keys Required
 
-- `ANTHROPIC_API_KEY` — [console.anthropic.com](https://console.anthropic.com)
-- `TAVILY_API_KEY` — [tavily.com](https://tavily.com)
-- `VOYAGE_API_KEY` — [dash.voyageai.com](https://dash.voyageai.com)
+- `ANTHROPIC_API_KEY` — console.anthropic.com
+- `TAVILY_API_KEY` — tavily.com
+- `VOYAGE_API_KEY` — dash.voyageai.com
 
-## Example Output
+## What I Learned
 
-Question: "Should I use Kafka or RabbitMQ for a high-throughput pipeline?"
-
-The agent searches 4-6 times across different angles, retrieves the most 
-relevant excerpts, and produces a structured recommendation with tradeoffs, 
-operational considerations, and cited sources.
-
-## Design Decisions
-
-- **Snippet-based RAG over full-page extraction** — Tavily snippets (~500 words 
-  per result) provide sufficient context without the complexity and cost of full 
-  page extraction. Evaluated full extraction via Tavily's extract API but chose 
-  snippets as the right tradeoff.
-  
-- **In-memory vector store** — embeddings are computed per request rather than 
-  persisted. Appropriate for a research tool where queries are unique each time. 
-  A persistent store like ChromaDB or Pinecone would be better for a fixed 
-  document corpus.
-
-- **Dynamic replanning** — Claude decides how many searches to run based on 
-  what it finds. This produces more thorough analyses than a fixed number of 
-  searches but costs more per query.
+The most important lesson: LLM systems fail in non-obvious ways. 
+Claude will confidently cite benchmarks that don't exist and 
+recommend services that can't handle your load. You need 
+systematic checks — a critic agent, citation rules, 
+defensive guards at every API boundary — not just good prompts.
