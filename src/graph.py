@@ -99,13 +99,18 @@ def search_node(state: ResearchState) -> ResearchState:
     
     # Run MCP research — Claude discovers tools and picks what to call
     mcp_result = run_mcp_research(context)
+
+    print(f"\n  DEBUG: MCP result length: {len(mcp_result)}")
+    print(f"  DEBUG: MCP result preview: {mcp_result[:300] if mcp_result else 'EMPTY'}")
     
     formatted_results = {
         "query": f"MCP round {search_count + 1}",
-        "summary": "",
-        "raw_mcp_result": mcp_result,
-        "chunks": []
+        "summary": extract_summary(mcp_result),
+        "full_content": mcp_result
     }
+
+    print(f"  DEBUG: full_content length: {len(formatted_results['full_content'])}")
+    print(f"  DEBUG: summary: '{formatted_results['summary']}'")
     
     current_results = state.get("search_results", [])
     current_searches = state.get("searches_done", [])
@@ -139,15 +144,12 @@ def synthesize_node(state: ResearchState) -> ResearchState:
     all_context = ""
     for i , result in enumerate(state["search_results"]):
         all_context += f"\n--- Search {i+1}: '{result['query']}' ---\n"
-        # Handle both old format and new MCP format
-        if "raw_mcp_result" in result:
-            all_context += result["raw_mcp_result"]
+        full_content = result.get("full_content", "")
+        if full_content:
+            all_context += full_content
         else:
-            all_context += f"Summary: {result['summary']}\n\n"
-            for chunk in result["chunks"]:
-                all_context += f"Source: {chunk.get('url', 'unknown')}\n"
-                all_context += f"Excerpt (relevance: {chunk['score']:.2f}):\n"
-                all_context += f"{chunk['text']}\n\n"
+            all_context += "No content retrieved for this search.\n"
+            print(f" Search {i+1} had no content for synthesis")
 
     clarifications = state.get("clarifications", "")
     critic_feedback = state.get("critic_feedback", "")
@@ -214,9 +216,15 @@ def reasoning_node(state: ResearchState) -> ResearchState:
     searches_summary = ""
     for i,result in enumerate(state["search_results"]):
         searches_summary += f"\nSearch {i+1}: '{result['query']}'\n"
-        searches_summary += f"Summary: {result['summary']}\n"
-        if result['chunks']:
-            searches_summary += f"Sample content: {result['chunks'][0]['text'][:200]}...\n"
+        summary = result.get("summary", "")
+        full_content = result.get("full_content", "")
+        if summary:
+            searches_summary += f"Summary: {summary}\n"
+        elif full_content:
+            searches_summary += f"Content preview: {full_content[:500]}\n"
+        else:
+            searches_summary += "No results retrieved\n"
+            print(f"  ⚠️ Search {i+1} returned empty results")
     
     prompt = f"""You are researching this architecture question:
         "{state['question']}"
@@ -498,11 +506,17 @@ def print_run_summary(final_state: ResearchState) -> None:
     print(f"\nSearch trail:")
     for i, query in enumerate(final_state['searches_done']):
         print(f"  {i+1}. {query}")
-    total_chunks = sum(
-        len(r['chunks']) for r in final_state['search_results']
-    )
-    print(f"\nTotal chunks retrieved: {total_chunks}")
     print(f"{'='*60}\n")
+
+def extract_summary(mcp_result: str) -> str:
+    """
+    Extract just the Tavily summary line from the MCP result string.
+    MCP server formats it as 'Summary: <text>\n'
+    """
+    for line in mcp_result.split("\n"):
+        if line.startswith("Summary:"):
+            return line.replace("Summary:", "").strip()
+    return ""
 
 def build_research_graph():
     """
