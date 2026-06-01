@@ -282,6 +282,10 @@ def clarify_node(state: ResearchState) -> ResearchState:
     Clarification node: before researching, ask the user targeted
     questions to make the analysis more specific and useful.
     """
+    if state.get("asked_clarifications"):
+        print("\n  ℹ️ Clarifications pre-filled, skipping interactive step")
+        return state
+        
     client = anthropic.Anthropic()
     prompt = f"""You are a senior software architect about to research this question:
     "{state['question']}"
@@ -293,7 +297,30 @@ def clarify_node(state: ResearchState) -> ResearchState:
     - Existing infrastructure and constraints
     - Specific technical requirements
 
-    Format as a numbered list. Be concise — one line per question."""
+    Format as a numbered list. Be concise — one line per question.
+    
+    CRITICAL: Only cite specific performance numbers, benchmarks, or statistics 
+    if they appear explicitly in the retrieved content provided to you. 
+    If you are uncertain of a specific number, use approximate language 
+    or omit it entirely. Never invent citations or benchmark sources.
+
+    CITATION RULES:
+    - Every specific claim, number, or benchmark must have an inline citation
+    - Format inline citations as [source: domain.com] immediately after the claim
+    - Only cite URLs that appear in the retrieved content provided to you
+    - Never cite a source for a claim if that source was not in your retrieved content
+    - List all cited sources again in a ## Sources section at the end
+
+    ADDITIONAL CITATION RULES:
+    - If you know a fact from your training data but it does NOT appear in 
+    retrieved content, you MUST signal this explicitly:
+    Write "Based on general knowledge: [claim]" without a source tag
+    - Never state a specific number, threshold, or benchmark without either:
+    a) An inline [source: url] citation from retrieved content, OR
+    b) Prefixing with "Based on general knowledge:" to signal it's not sourced
+    - When in doubt, use approximate language: "typically", "generally", 
+    "commonly reported" rather than stating a specific number without a source
+    """
     response = client.messages.create(
         model="claude-opus-4-6",
         max_tokens=300,
@@ -557,7 +584,7 @@ def build_research_graph():
     # Compile the graph — this validates your structure
     return graph.compile()
 
-def run_research_agent(question: str) -> str:
+def run_research_agent(question: str, prefilled_clarifications: str = None) -> str:
     """
     Run the research agent graph for a given question.
     """
@@ -577,8 +604,8 @@ def run_research_agent(question: str) -> str:
         "max_searches": 5,
         "has_enough_info": False,
         "next_search_query": "",
-        "clarifications": "",
-        "asked_clarifications": False,
+        "clarifications": prefilled_clarifications or "",  # NEW
+        "asked_clarifications": prefilled_clarifications is not None,
         "critic_feedback": "",
         "critic_approved": False,
         "revision_count": 0,
